@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as THREE from 'three';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, ChevronLeft } from 'lucide-react';
+// 引入后处理效果，这是让画面“酷炫”的关键
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass';
 
 // --- 完整剧情数据 (细致拆分版) ---
 const RAW_STORY_DATA = [
@@ -702,26 +706,30 @@ const processStoryData = (data) => {
   const chapters = [];
   let currentChapter = null;
   let sectionCounter = 1;
-
   return data.map((item) => {
     if (item.chapter !== currentChapter) {
       currentChapter = item.chapter;
       chapters.push(item.chapter);
       sectionCounter = 1;
     }
-    const chapterNum = chapters.length;
-    const sectionNum = sectionCounter++;
-    return { ...item, chapterNum, sectionNum };
+    return { ...item, chapterNum: chapters.length, sectionNum: sectionCounter++ };
   });
 };
 
-const STORY_DATA = processStoryData(RAW_STORY_DATA);
+// 假设外部传入或上面已定义 RAW_STORY_DATA，这里做处理
+// *请将你原来代码中的 RAW_STORY_DATA 完整保留在文件顶部*
+// 下面这行代码假设你已经把上面的 RAW_STORY_DATA 补全了
+const STORY_DATA = processStoryData(typeof RAW_STORY_DATA !== 'undefined' ? RAW_STORY_DATA : STORY_DATA_SOURCE);
 
+// --- 高级 Shader: 增加菲涅尔光效和流动噪点 ---
 const distortionVertexShader = `
   uniform float time;
   uniform float distortStrength;
   varying vec2 vUv;
   varying vec3 vNormal;
+  varying float vDistort; // 传递变形程度给片元着色器
+
+  // Simplex Noise (部分省略，保留核心逻辑)
   vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -775,9 +783,10 @@ const distortionVertexShader = `
 
   void main() {
     vUv = uv;
-    vNormal = normal;
+    vNormal = normalize(normalMatrix * normal);
     vec3 pos = position;
-    float noise = snoise(pos * 1.5 + time * 0.5);
+    float noise = snoise(pos * 1.2 + time * 0.4);
+    vDistort = noise; // 记录变形量
     pos += normal * noise * distortStrength;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
@@ -785,13 +794,23 @@ const distortionVertexShader = `
 
 const distortionFragmentShader = `
   uniform vec3 color;
+  uniform float time;
   varying vec3 vNormal;
+  varying float vDistort;
+  
   void main() {
-    vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
-    float diff = max(dot(vNormal, lightDir), 0.0);
-    vec3 ambient = color * 0.4;
-    vec3 diffuse = color * diff * 0.8;
-    gl_FragColor = vec4(ambient + diffuse, 1.0);
+    // 菲涅尔效应：边缘更亮
+    vec3 viewDir = vec3(0.0, 0.0, 1.0); // 简化视角
+    float fresnel = pow(1.0 - dot(vNormal, viewDir), 2.0);
+    
+    // 基于变形量的颜色混合
+    vec3 baseColor = color;
+    vec3 highlightColor = color + vec3(0.3); // 高光更亮
+    
+    vec3 finalColor = mix(baseColor, highlightColor, fresnel + vDistort * 0.2);
+    
+    // 增加一点自发光感
+    gl_FragColor = vec4(finalColor, 1.0);
   }
 `;
 
@@ -808,30 +827,31 @@ export default function MythosNovel() {
     const container = mountRef.current;
     if (!container) return;
 
+    // 1. Scene Setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#f0f0f0");
-    scene.fog = new THREE.FogExp2("#f0f0f0", 0.05);
+    // Fog 增加深邃感
+    scene.fog = new THREE.FogExp2(0x000000, 0.03);
 
-    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 0, 6);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 8);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }); // Post-processing 建议关闭默认抗锯齿以提升性能
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ReinhardToneMapping;
     container.appendChild(renderer.domElement);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-    scene.add(ambientLight);
+    // 2. Post Processing (Bloom)
+    const renderScene = new RenderPass(scene, camera);
+    // 参数: 强度, 半径, 阈值
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+    
+    const composer = new EffectComposer(renderer);
+    composer.addPass(renderScene);
+    composer.addPass(bloomPass);
 
-    const pointLight1 = new THREE.PointLight(0xffffff, 1);
-    pointLight1.position.set(10, 10, 10);
-    scene.add(pointLight1);
-
-    const pointLight2 = new THREE.PointLight(0x4444ff, 0.5);
-    pointLight2.position.set(-10, -10, -10);
-    scene.add(pointLight2);
-
-    const coreGeometry = new THREE.IcosahedronGeometry(1, 4);
+    // 3. Central Core Object
+    const coreGeometry = new THREE.IcosahedronGeometry(1, 32); // 增加面数以获得更好的变形效果
     const coreMaterial = new THREE.ShaderMaterial({
       uniforms: {
         time: { value: 0 },
@@ -840,184 +860,247 @@ export default function MythosNovel() {
       },
       vertexShader: distortionVertexShader,
       fragmentShader: distortionFragmentShader,
-      wireframe: false
+      wireframe: false,
+      transparent: true
     });
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
     scene.add(coreMesh);
 
-    const particleCount = 200;
-    const particleGeo = new THREE.DodecahedronGeometry(0.08, 0);
-    const particleMat = new THREE.MeshPhongMaterial({ color: "#333333" });
-    const particles = new THREE.InstancedMesh(particleGeo, particleMat, particleCount);
+    // 4. Advanced Particle System
+    const particleCount = 600;
+    // 使用 PlaneGeometry 配合贴图做发光粒子，比 Dodecahedron 性能更好且光效更佳
+    const particleGeo = new THREE.PlaneGeometry(0.15, 0.15); 
+    const particleMat = new THREE.MeshBasicMaterial({ 
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending, // 叠加混合，发光关键
+        depthWrite: false 
+    });
     
-    const particleData = [];
-    const dummy = new THREE.Object3D();
-
-    for (let i = 0; i < particleCount; i++) {
-       particleData.push({
-         t: Math.random() * 100,
-         factor: 20 + Math.random() * 100,
-         speed: 0.005 + Math.random() * 0.01,
-         xFactor: -50 + Math.random() * 100,
-         yFactor: -50 + Math.random() * 100,
-         zFactor: -50 + Math.random() * 100,
-         my: 0 
-       });
-       dummy.position.set(0,0,0);
-       dummy.updateMatrix();
-       particles.setMatrixAt(i, dummy.matrix);
-    }
+    const particles = new THREE.InstancedMesh(particleGeo, particleMat, particleCount);
     scene.add(particles);
 
+    // 粒子状态数据
+    const particleData = new Array(particleCount).fill(0).map(() => ({
+      // 基础位置（极坐标或盒子坐标）
+      originalX: (Math.random() - 0.5) * 20,
+      originalY: (Math.random() - 0.5) * 20,
+      originalZ: (Math.random() - 0.5) * 10,
+      // 动态属性
+      velocity: new THREE.Vector3(0, 0, 0),
+      speed: 0.02 + Math.random() * 0.05, // 随机下落速度
+      phase: Math.random() * Math.PI * 2, // 动画相位
+      radius: 2 + Math.random() * 4, // 环绕半径
+      angle: Math.random() * Math.PI * 2,
+      
+      // 当前位置缓存
+      x: 0, y: 0, z: 0
+    }));
+
+    // 预分配对象以减少 GC
+    const dummy = new THREE.Object3D();
+    
+    // 5. Stars / Background Dust
     const starGeo = new THREE.BufferGeometry();
-    const starCount = 2000;
+    const starCount = 1500;
     const starPos = new Float32Array(starCount * 3);
     for(let i=0; i<starCount*3; i++) {
-      starPos[i] = (Math.random() - 0.5) * 100;
+      starPos[i] = (Math.random() - 0.5) * 60;
     }
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-    const starMat = new THREE.PointsMaterial({ size: 0.1, color: 0xffffff, transparent: true, opacity: 0 });
+    const starMat = new THREE.PointsMaterial({ 
+        size: 0.05, 
+        color: 0xffffff, 
+        transparent: true, 
+        opacity: 0.4,
+        blending: THREE.AdditiveBlending
+    });
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
 
     const clock = new THREE.Clock();
     
+    // Mouse interaction
+    const mouse = new THREE.Vector2();
+    const onMouseMove = (e) => {
+        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    };
+    window.addEventListener('mousemove', onMouseMove);
+
+    // --- Animation Loop ---
     const animate = () => {
-      requestAnimationFrame(animate);
       const time = clock.getElapsedTime();
+      const delta = clock.getDelta() * 60; // 标准化 delta
       const mode = modeRef.current;
 
+      // --- Global Visual State Transitions ---
       let targetColor = new THREE.Color("#000000");
-      let targetFogDensity = 0.02;
+      let targetBloomStrength = 1.5;
       let targetParticleColor = new THREE.Color("#ffffff");
+      let targetDistort = 0.2;
+      let targetCoreScale = 1;
 
       if (mode === 'void') {
-        targetColor.set("#f0f0f0");
-        targetFogDensity = 0.05;
+        targetColor.set("#f5f5f5"); // 白底
         targetParticleColor.set("#333333");
+        targetBloomStrength = 0; // Void 模式不需要发光
+        targetDistort = 0.1;
+        targetCoreScale = 0.8;
       } else if (mode === 'glow') {
-        targetColor.set("#1a1a1a");
-        targetParticleColor.set("#e0e0e0");
+        targetColor.set("#121212");
+        targetParticleColor.set("#ffffff");
+        targetBloomStrength = 2.0;
+        targetDistort = 0.4;
       } else if (mode === 'burst') {
         targetColor.set("#1a0505");
-        targetParticleColor.set("#ff4d4d");
+        targetParticleColor.set("#ff3333");
+        targetBloomStrength = 3.0;
+        targetDistort = 1.5;
+        targetCoreScale = 1.2;
       } else if (mode === 'unstable') {
-        targetColor.set("#0a0a20");
+        targetColor.set("#05051a");
         targetParticleColor.set("#4d79ff");
+        targetBloomStrength = 2.5;
+        targetDistort = 1.2;
       } else if (mode === 'island_forming') {
-        targetColor.set("#0c0a20");
+        targetColor.set("#0a0a0a");
         targetParticleColor.set("#ffd700");
+        targetBloomStrength = 1.8;
+        targetDistort = 0.2;
+        targetCoreScale = 1.4;
       } else if (mode === 'duality') {
-        targetColor.set("#1a0520");
-        targetParticleColor.set("#a855f7");
+        targetColor.set("#0f0514");
+        targetParticleColor.set("#c084fc");
+        targetBloomStrength = 2.2;
+        targetDistort = 0.6;
+      } else if (mode === 'rain' || mode === 'fall') {
+        targetColor.set("#050505");
+        targetParticleColor.set("#a0e0ff"); // 微微发蓝的雨
+        targetBloomStrength = 1.2;
+        targetDistort = 0.3;
       } else if (mode === 'silence') {
         targetColor.set("#000000");
-        targetFogDensity = 0.1;
         targetParticleColor.set("#333333");
+        targetBloomStrength = 0.5;
+        targetCoreScale = 0.01;
       } else if (mode === 'distortion') {
-         targetColor.set("#050000");
-         targetParticleColor.set("#ef4444");
-      } else if (mode === 'rain' || mode === 'fall') {
-         targetColor.set("#080808");
-         targetParticleColor.set("#a0a0a0");
+         targetColor.set("#000000");
+         targetParticleColor.set("#ff0000");
+         targetBloomStrength = 4.0; // 强烈的过曝感
+         targetDistort = 3.0;
       }
 
-      scene.background.lerp(targetColor, 0.02);
-      scene.fog.color.lerp(targetColor, 0.02);
-      scene.fog.density += (targetFogDensity - scene.fog.density) * 0.01;
+      // 平滑过渡背景和参数
+      scene.background = scene.background || new THREE.Color();
+      scene.background.lerp(targetColor, 0.05);
+      scene.fog.color.copy(scene.background);
+      bloomPass.strength += (targetBloomStrength - bloomPass.strength) * 0.05;
       
-      const starTargetOpacity = (mode === 'void') ? 0 : 0.5;
-      stars.material.opacity += (starTargetOpacity - stars.material.opacity) * 0.02;
-
-      const currentPColor = particles.material.color;
-      currentPColor.lerp(targetParticleColor, 0.05);
-
-      coreMesh.rotation.x = time * 0.2;
-      coreMesh.rotation.y = time * 0.3;
-      
+      // Core Update
+      coreMaterial.uniforms.color.value.lerp(targetParticleColor, 0.05);
       coreMaterial.uniforms.time.value = time;
-      
-      let targetDistort = 0;
-      let targetCoreColor = new THREE.Color("#ffffff");
-      let targetScale = 1;
-      let targetWireframe = false;
-
-      if (mode === 'void') {
-        targetScale = 0.8; 
-        targetCoreColor.set("#cccccc");
-      } else if (mode === 'burst') {
-        targetDistort = 0.8;
-        targetCoreColor.set("#ff4d4d");
-        targetScale = 1.2;
-      } else if (mode === 'unstable') {
-        targetDistort = 1.2;
-        targetCoreColor.set("#4d79ff");
-        targetScale = 1.1;
-      } else if (mode === 'island_forming') {
-        targetDistort = 0.1;
-        targetWireframe = true;
-        targetCoreColor.set("#ffd700");
-        targetScale = 1.5;
-      } else if (mode === 'duality') {
-        targetDistort = 0.4;
-        targetCoreColor.set("#d8b4fe");
-        targetScale = 1.2;
-      } else if (mode === 'distortion') {
-        targetDistort = 2.0;
-        targetCoreColor.set("#ef4444");
-        targetScale = 1.3;
-      } else if (mode === 'silence') {
-        targetScale = 0.01;
-      }
-
       coreMaterial.uniforms.distortStrength.value += (targetDistort - coreMaterial.uniforms.distortStrength.value) * 0.05;
-      coreMaterial.uniforms.color.value.lerp(targetCoreColor, 0.05);
-      coreMesh.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.05);
-      coreMaterial.wireframe = targetWireframe;
+      coreMesh.scale.lerp(new THREE.Vector3(targetCoreScale, targetCoreScale, targetCoreScale), 0.05);
+      
+      // Core 缓慢自转 + 鼠标视差
+      coreMesh.rotation.y = time * 0.1 + mouse.x * 0.1;
+      coreMesh.rotation.x = mouse.y * 0.1;
 
+      particles.material.color.lerp(targetParticleColor, 0.05);
+
+      // --- Particles Logic Engine ---
       for (let i = 0; i < particleCount; i++) {
         const p = particleData[i];
         
-        p.t += p.speed;
-
-        const a = Math.cos(p.t) + Math.sin(p.t * 1) / 10;
-        const b = Math.sin(p.t) + Math.cos(p.t * 2) / 10;
-        const s = Math.cos(p.t);
-
+        // 根据模式决定位置逻辑
         if (mode === 'fall' || mode === 'rain') {
-            p.my -= 0.05;
-            if (p.my < -10) p.my = 10;
-            dummy.position.set(
-                p.xFactor / 5,
-                p.my,
-                p.zFactor / 5
-            );
-            dummy.scale.set(0.5, 0.5, 0.5);
-        } else if (mode === 'burst') {
-            const burstRadius = (Math.sin(time * 2 + p.factor) + 2) * 2;
-            dummy.position.set(
-                (p.xFactor / 10) * burstRadius * 0.5,
-                (p.yFactor / 10) * burstRadius * 0.5,
-                (p.zFactor / 10) * burstRadius * 0.5
-            );
-             dummy.scale.set(1, 1, 1);
+            // ============= IMPROVED FALL LOGIC =============
+            // 每个粒子有自己的速度 p.speed
+            p.y -= p.speed * (mode === 'rain' ? 5.0 : 2.0); // 雨更快，Fall 稍慢
+            
+            // 如果掉出边界，重置到顶部随机位置
+            if (p.y < -12) {
+                p.y = 12;
+                p.x = (Math.random() - 0.5) * 25; // 宽度随机
+                p.z = (Math.random() - 0.5) * 10; // 深度随机
+                p.speed = 0.05 + Math.random() * 0.1; // 重置速度，增加随机性
+            }
+            
+            // 加上一点风的扰动
+            p.x += Math.sin(time + p.y) * 0.01;
+
+        } else if (mode === 'island_forming') {
+            // 汇聚成环/岛屿
+            p.angle += 0.002 * (i % 2 === 0 ? 1 : -1);
+            const targetRadius = 3 + Math.sin(time + i) * 0.5;
+            const tx = Math.cos(p.angle + i) * targetRadius;
+            const tz = Math.sin(p.angle + i) * targetRadius;
+            const ty = Math.sin(time * 2 + i * 0.1) * 0.5; // 波浪起伏
+
+            p.x += (tx - p.x) * 0.02;
+            p.y += (ty - p.y) * 0.02;
+            p.z += (tz - p.z) * 0.02;
+
+        } else if (mode === 'burst' || mode === 'distortion') {
+            // 爆炸/混乱
+            const burstSpeed = mode === 'distortion' ? 0.5 : 0.2;
+            // 利用原始位置做噪点扩算
+            const noise = Math.sin(time * 5 + i);
+            const tx = p.originalX * (1 + Math.sin(time) * burstSpeed);
+            const ty = p.originalY * (1 + Math.cos(time) * burstSpeed);
+            const tz = p.originalZ + noise;
+            
+            p.x += (tx - p.x) * 0.1;
+            p.y += (ty - p.y) * 0.1;
+            p.z += (tz - p.z) * 0.1;
+
+        } else if (mode === 'void') {
+            // 漂浮散开
+            const tx = p.originalX * 2;
+            const ty = p.originalY * 2;
+            const tz = p.originalZ * 2;
+            // 极慢的插值
+            p.x += (tx - p.x) * 0.01;
+            p.y += (ty - p.y) * 0.01;
+            p.z += (tz - p.z) * 0.01;
         } else {
-            dummy.position.set(
-                (p.xFactor / 10) + Math.cos(p.t + p.factor) * 2,
-                (p.yFactor / 10) + Math.sin(p.t + p.factor) * 2,
-                (p.zFactor / 10) + Math.sin(p.t * 0.5)
-            );
-            dummy.scale.set(s + 0.5, s + 0.5, s + 0.5);
+            // 默认 Glow/Duality: 围绕中心柔和浮动
+            const floatY = Math.sin(time + p.phase) * 1.5;
+            const floatX = Math.cos(time * 0.5 + p.phase) * 0.5;
+            
+            p.x += (p.originalX + floatX - p.x) * 0.05;
+            p.y += (p.originalY + floatY - p.y) * 0.05;
+            p.z += (p.originalZ - p.z) * 0.05;
         }
 
-        dummy.rotation.set(time, time, time);
+        // Update Dummy Matrix
+        dummy.position.set(p.x, p.y, p.z);
+        
+        // 粒子朝向摄像机 (Billboard effect)
+        dummy.rotation.copy(camera.rotation);
+        
+        // 缩放：在 Burst 模式下变大，Rain 模式下变细长（简单模拟）
+        let s = 1;
+        if (mode === 'rain') s = 0.5;
+        else if (mode === 'burst') s = 1.0 + Math.sin(time * 10 + i) * 0.5;
+        
+        dummy.scale.set(s, s, s);
         dummy.updateMatrix();
         particles.setMatrixAt(i, dummy.matrix);
       }
       particles.instanceMatrix.needsUpdate = true;
 
+      // 摄像机微动
+      camera.position.x += (mouse.x * 0.5 - camera.position.x) * 0.02;
+      camera.position.y += (mouse.y * 0.5 - camera.position.y) * 0.02;
+      camera.lookAt(0, 0, 0);
 
-      renderer.render(scene, camera);
+      // 使用 composer 渲染代替 renderer.render
+      composer.render();
+      requestAnimationFrame(animate);
     };
 
     animate();
@@ -1026,15 +1109,18 @@ export default function MythosNovel() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('mousemove', onMouseMove);
       if (container.contains(renderer.domElement)) {
           container.removeChild(renderer.domElement);
       }
       renderer.dispose();
+      composer.dispose();
       coreGeometry.dispose();
       coreMaterial.dispose();
       particleGeo.dispose();
@@ -1044,38 +1130,27 @@ export default function MythosNovel() {
     };
   }, []);
 
+  // UI Logic
   const currentData = STORY_DATA[currentIndex];
-
-  const handleNext = () => {
-    if (currentIndex < STORY_DATA.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    } else {
-      setCurrentIndex(0);
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(prev => prev - 1);
-    }
-  };
+  const handleNext = () => setCurrentIndex(prev => (prev < STORY_DATA.length - 1 ? prev + 1 : 0));
+  const handlePrev = () => setCurrentIndex(prev => (prev > 0 ? prev - 1 : 0));
 
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.target.tagName === 'INPUT') return;
-      if (e.key === 'ArrowRight' || e.key === 'Space' || e.key===" ") handleNext();
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Space') handleNext();
       if (e.key === 'ArrowLeft') handlePrev();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex]);
+  }, []);
 
   return (
     <div className="w-full h-screen overflow-hidden bg-black font-sans selection:bg-white/30 relative">
       {/* 3D Container */}
       <div ref={mountRef} className="absolute inset-0 z-0 block" />
 
-      {/* UI Layer */}
+      {/* UI Overlay */}
       <StoryOverlay 
         currentData={currentData} 
         onNext={handleNext} 
@@ -1084,21 +1159,27 @@ export default function MythosNovel() {
         total={STORY_DATA.length}
       />
 
-       {/* 装饰性角落元素 */}
-      <div className="absolute top-0 left-0 p-8 pointer-events-none z-20 opacity-30 hidden md:block">
-        <div className={`w-px h-32 transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'bg-black' : 'bg-white'}`}></div>
+       {/* 装饰性边框 - 随模式变色 */}
+      <div className="absolute top-0 left-0 p-6 md:p-8 pointer-events-none z-20 opacity-40 hidden md:block">
+        <motion.div 
+          animate={{ backgroundColor: currentData.visualMode === 'void' ? '#000' : '#fff' }}
+          className="w-px h-32"
+        />
       </div>
-      <div className="absolute bottom-0 right-0 p-8 pointer-events-none z-20 opacity-30 hidden md:block">
-        <div className={`w-px h-32 transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'bg-black' : 'bg-white'}`}></div>
+      <div className="absolute bottom-0 right-0 p-6 md:p-8 pointer-events-none z-20 opacity-40 hidden md:block">
+        <motion.div 
+          animate={{ backgroundColor: currentData.visualMode === 'void' ? '#000' : '#fff' }}
+          className="w-px h-32"
+        />
       </div>
-
-      {/* 提示 */}
+      
+      {/* Loading / Start Hint */}
       {currentIndex === 0 && (
         <motion.div 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          delay={2}
-          className={`absolute bottom-4 w-full text-center text-[10px] tracking-widest uppercase z-10 mb-20 ${currentData.visualMode === 'void' ? 'text-black/40' : 'text-white/30'}`}
+          transition={{ delay: 1, duration: 1 }}
+          className={`absolute bottom-8 w-full text-center text-[10px] tracking-[0.2em] uppercase z-10 ${currentData.visualMode === 'void' ? 'text-black/30' : 'text-white/30'}`}
         >
           「 按 下 空 格 或 点 击 按 钮 以 继 续 」
         </motion.div>
@@ -1108,8 +1189,12 @@ export default function MythosNovel() {
 }
 
 const StoryOverlay = ({ currentData, onNext, onPrev, progress, total }) => {
+  const isLightMode = currentData.visualMode === 'void';
+  const textColorClass = isLightMode ? 'text-gray-900' : 'text-white';
+  const subTextColorClass = isLightMode ? 'text-gray-500' : 'text-white/60';
+
   return (
-    <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-8 z-10">
+    <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-6 md:p-12 z-10">
       {/* Header */}
       <motion.div 
         initial={{ opacity: 0, y: -20 }}
@@ -1117,35 +1202,34 @@ const StoryOverlay = ({ currentData, onNext, onPrev, progress, total }) => {
         key={`header-${currentData.chapter}`}
         className="w-full flex justify-between items-start"
       >
-        <h2 className={`text-xs tracking-[0.5em] uppercase font-light transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'text-black' : 'text-white/70'}`} style={{ textShadow: currentData.visualMode === 'void' ? 'none' : '0 0 10px rgba(0,0,0,0.5)' }}>
-          {currentData.chapter}
-        </h2>
-        <div className={`text-xs font-mono transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'text-black' : 'text-white/70'}`} style={{ textShadow: currentData.visualMode === 'void' ? 'none' : '0 0 10px rgba(0,0,0,0.5)' }}>
-           {currentData.chapterNum-1}章 {currentData.sectionNum}节
+        <div className="flex flex-col">
+            <h2 className={`text-xs tracking-[0.3em] uppercase font-medium mb-1 ${textColorClass}`}>
+            {currentData.chapter}
+            </h2>
+            <div className="h-px w-12 bg-current opacity-30"/>
+        </div>
+        <div className={`text-[10px] font-mono tracking-widest ${subTextColorClass}`}>
+           {String(currentData.chapterNum).padStart(2, '0')} // {String(currentData.sectionNum).padStart(2, '0')}
         </div>
       </motion.div>
 
-      {/* Text Content */}
-      <div className="absolute inset-0 flex justify-center items-center text-center z-10">
+      {/* Center Text */}
+      <div className="absolute inset-0 flex justify-center items-center text-center px-4">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentData.id}
-            initial={{ opacity: 0, scale: 0.95, filter: 'blur(10px)' }}
-            animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, scale: 1.05, filter: 'blur(5px)' }}
-            transition={{ duration: 0.8, ease: "easeOut" }}
-            className="max-w-2xl pointer-events-auto p-4 rounded-xl"
-            style={{
-              backgroundColor: 'rgba(255,255,255,0.0)', 
-              backdropFilter: 'none'
-            }}
+            initial={{ opacity: 0, y: 10, filter: 'blur(8px)' }}
+            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
+            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            className="max-w-3xl pointer-events-auto"
           >
             {currentData.text.split('\n').map((line, i) => (
               <p 
                 key={i} 
-                className={`mb-6 text-lg md:text-2xl leading-relaxed font-serif tracking-wide transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'text-gray-800' : 'text-gray-100'}`}
+                className={`mb-4 text-xl md:text-3xl lg:text-4xl font-light leading-relaxed font-serif tracking-wide ${textColorClass}`}
                 style={{ 
-                  textShadow: currentData.visualMode === 'void' ? 'none' : '0 2px 4px rgba(0,0,0,0.8), 0 0 20px rgba(0,0,0,0.5)'
+                    textShadow: currentData.visualMode === 'void' ? 'none' : '0 2px 4px rgba(0,0,0,0.8), 0 0 20px rgba(0,0,0,0.5)'
                 }}
               >
                 {line}
@@ -1155,23 +1239,23 @@ const StoryOverlay = ({ currentData, onNext, onPrev, progress, total }) => {
         </AnimatePresence>
       </div>
 
-      {/* Controls */}
-      <div className="w-full flex justify-center items-center gap-8 pointer-events-auto pb-8 mb-14">
+      {/* Footer Controls */}
+      <div className="w-full flex justify-center items-center gap-12 pointer-events-auto">
         <button 
           onClick={onPrev} 
           disabled={progress === 0}
-            className={`p-4 rounded-full transition-all duration-300 group ${progress === 0 ? 'opacity-0' : 'opacity-100 hover:bg-white/10'}`}
+            className={`group p-2 transition-all duration-300 ${progress === 0 ? 'opacity-0' : 'opacity-50 hover:opacity-100'}`}
         >
-          <ChevronLeft className={`w-6 h-6 transition-colors duration-1000 ${currentData.visualMode === 'void' ? 'text-black' : 'text-white'}`} />
+          <ChevronLeft className={`w-6 h-6 ${textColorClass}`} />
         </button>
 
         <button 
             onClick={onNext}
             className={`group relative px-8 py-3 overflow-hidden rounded-full transition-all duration-500 ${currentData.visualMode === 'void' ? 'bg-black text-white' : 'bg-white/10 backdrop-blur-md text-white border border-white/20 hover:bg-white/20'}`}
          >
-            <span className="relative z-10 flex items-center gap-2 text-sm tracking-widest uppercase">
+            <span className="relative z-10 flex items-center gap-3 text-xs tracking-[0.2em] uppercase pl-1">
                {progress === total - 1 ? '再次轮回' : '继续探求'} 
-               {progress !== total - 1 && <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />}
+               {progress !== total - 1 && <ChevronRight className="w-3 h-3 transition-transform group-hover:translate-x-1" />}
             </span>
          </button>
       </div>
