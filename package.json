@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "gh-pages -d dist --repo git@github.com:gymbag114/some-myth.git",
+    "homepage": "https://gymbag114.github.io/some-myth/"
   },
   "dependencies": {
     "framer-motion": "^12.23.24",
