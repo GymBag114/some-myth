@@ -6,7 +6,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass';
 
-// --- 1. 数据准备 ---
+// --- 1. 完整剧情数据 ---
 const RAW_STORY_DATA = [
   // --- 第一章：无中之始 ---
   { id: 'c1-1', chapter: '「无中之始」ZERORIGIN', text: "诞生？\n不，不对。\n是溢出。", visualMode: 'void' },
@@ -216,7 +216,7 @@ const distortionFragmentShader = `
 `;
 
 // --- 3. 子组件：章节转场 ---
-const ChapterTransition = ({ show, chapterData, onAnimationComplete }) => {
+const ChapterTransition = ({ show, chapterData, onAnimationComplete, onDismiss }) => {
   const themeConfig = {
     1: { // 无中之始
       bg: "bg-[#f5f5f5]",
@@ -251,10 +251,13 @@ const ChapterTransition = ({ show, chapterData, onAnimationComplete }) => {
       {show && (
         <motion.div
           key="chapter-transition"
-          className={`fixed inset-0 z-[100] flex flex-col items-center justify-center ${config.bg} cursor-none`}
+          // 支持点击跳过/恢复
+          onClick={onDismiss}
+          className={`fixed inset-0 z-[100] flex flex-col items-center justify-center ${config.bg} cursor-pointer`}
+          // 下落式幕布效果
           initial={{ clipPath: "inset(0 0 100% 0)" }}
-          animate={{ clipPath: "inset(0 0 0% 0)" }}
-          exit={{ clipPath: "inset(0 0 0 100%)" }}
+          animate={{ clipPath: "inset(0 0 0 0)" }}
+          exit={{ clipPath: "inset(100% 0 0 0)" }}    
           transition={{ duration: 0.8, ease: [0.76, 0, 0.24, 1] }}
         >
           {/* 装饰线条 */}
@@ -305,13 +308,22 @@ const ChapterTransition = ({ show, chapterData, onAnimationComplete }) => {
             )}
           </motion.h1>
 
+          {/* 跳过提示 */}
           <motion.div
              initial={{ opacity: 0 }}
              animate={{ opacity: 1 }}
              transition={{ delay: 0.8 }}
              className={`absolute bottom-12 text-[10px] tracking-[1em] uppercase ${config.sub}`}
           >
-             System Synchronization...
+             Reflecting Infinity
+          </motion.div>
+          <motion.div
+             initial={{ opacity: 0 }}
+             animate={{ opacity: 0.5 }}
+             transition={{ delay: 2.5 }}
+             className={`absolute bottom-4 text-[8px] tracking-widest uppercase ${config.sub}`}
+          >
+             [ Click to Skip ]
           </motion.div>
         </motion.div>
       )}
@@ -320,7 +332,7 @@ const ChapterTransition = ({ show, chapterData, onAnimationComplete }) => {
 };
 
 // --- 4. 子组件：故事覆盖层 (UI) ---
-const StoryOverlay = ({ currentData, onNext, onPrev, progress, total }) => {
+const StoryOverlay = ({ currentData, onNext, onPrev, progress, total, showTransition }) => {
   const isLightMode = currentData.visualMode === 'void';
   const textColorClass = isLightMode ? 'text-gray-900' : 'text-white';
   const subTextColorClass = isLightMode ? 'text-gray-500' : 'text-white/60';
@@ -416,15 +428,16 @@ const StoryOverlay = ({ currentData, onNext, onPrev, progress, total }) => {
       <div className="w-full flex justify-center items-center gap-8 md:gap-12 pointer-events-auto relative z-20">
         <button 
           onClick={onPrev} 
-          disabled={progress === 0}
-            className={`group p-4 md:p-2 transition-all duration-300 active:scale-90 ${progress === 0 ? 'opacity-0' : 'opacity-50 hover:opacity-100'}`}
+          disabled={progress === 0 || showTransition}
+            className={`group p-4 md:p-2 transition-all duration-300 active:scale-90 ${progress === 0 ? 'opacity-0' : 'opacity-50 hover:opacity-100'} ${showTransition ? 'cursor-not-allowed opacity-20' : ''}`}
         >
           <ChevronLeft className={`w-6 h-6 ${textColorClass}`} />
         </button>
 
         <button 
             onClick={onNext}
-            className={`group relative px-8 py-3 md:px-8 md:py-3 overflow-hidden rounded-full transition-all duration-500 active:scale-95 ${currentData.visualMode === 'void' ? 'bg-black text-white shadow-lg' : 'bg-white/10 backdrop-blur-md text-white border border-white/20 hover:bg-white/20 shadow-[0_0_15px_rgba(255,255,255,0.15)]'}`}
+            disabled={showTransition}
+            className={`group relative px-8 py-3 md:px-8 md:py-3 overflow-hidden rounded-full transition-all duration-500 active:scale-95 ${showTransition ? 'cursor-not-allowed opacity-50' : ''} ${currentData.visualMode === 'void' ? 'bg-black text-white shadow-lg' : 'bg-white/10 backdrop-blur-md text-white border border-white/20 hover:bg-white/20 shadow-[0_0_15px_rgba(255,255,255,0.15)]'}`}
          >
             <span className="relative z-10 flex items-center gap-3 text-xs tracking-[0.2em] uppercase pl-1">
                {progress === total - 1 ? '再次轮回' : '继续探求'} 
@@ -448,14 +461,41 @@ export default function MythosNovel() {
   const mountRef = useRef(null);
   const modeRef = useRef(STORY_DATA[0].visualMode);
 
+  // 手动关闭转场（用于跳过或修复卡死）
+  const handleDismissTransition = () => {
+    setShowTransition(false);
+  };
+
+  const handleNext = () => {
+    if (showTransition) return; // 锁定
+    setCurrentIndex(prev => (prev < STORY_DATA.length - 1 ? prev + 1 : 0));
+  };
+  const handlePrev = () => {
+    if (showTransition) return; // 锁定
+    setCurrentIndex(prev => (prev > 0 ? prev - 1 : 0));
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (showTransition) return; // 锁定
+
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Space') handleNext();
+      if (e.key === 'ArrowLeft') handlePrev();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showTransition]);
+
+  // 监听章节变化触发转场
   useEffect(() => {
     modeRef.current = STORY_DATA[currentIndex].visualMode;
 
-    // 监听章节变化触发转场
     const currentChapter = STORY_DATA[currentIndex].chapter;
     if (currentChapter !== prevChapterRef.current) {
         setTransitionData(STORY_DATA[currentIndex]);
         setShowTransition(true);
+        // 3秒后自动关闭
         const timer = setTimeout(() => setShowTransition(false), 3000);
         prevChapterRef.current = currentChapter;
         return () => clearTimeout(timer);
@@ -478,7 +518,6 @@ export default function MythosNovel() {
     scene.fog = new THREE.FogExp2(0x000000, 0.03);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
-    // 根据屏幕比例调整初始位置
     camera.position.set(0, 0, (isMobile && window.innerWidth/window.innerHeight < 1) ? 6 : 4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
@@ -509,7 +548,7 @@ export default function MythosNovel() {
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
     scene.add(coreMesh);
 
-    // Particles (Optimized)
+    // Particles (Optimized: 数量减少，透明度降低)
     const particleCount = isMobile ? 100 : 200;
     const particleGeo = new THREE.PlaneGeometry(0.05, 0.05);
     const particleMat = new THREE.MeshBasicMaterial({ 
@@ -535,7 +574,7 @@ export default function MythosNovel() {
     }));
     const dummy = new THREE.Object3D();
 
-    // Stars (Optimized)
+    // Stars (Optimized: 数量减少)
     const starCount = isMobile ? 300 : 600;
     const starGeo = new THREE.BufferGeometry();
     const starPos = new Float32Array(starCount * 3);
@@ -725,18 +764,6 @@ export default function MythosNovel() {
   }, []);
 
   const currentData = STORY_DATA[currentIndex];
-  const handleNext = () => setCurrentIndex(prev => (prev < STORY_DATA.length - 1 ? prev + 1 : 0));
-  const handlePrev = () => setCurrentIndex(prev => (prev > 0 ? prev - 1 : 0));
-
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.target.tagName === 'INPUT') return;
-      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Space') handleNext();
-      if (e.key === 'ArrowLeft') handlePrev();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   return (
     <div className="w-full h-screen sm:h-[100dvh] overflow-hidden bg-black font-sans selection:bg-white/30 relative">
@@ -746,6 +773,7 @@ export default function MythosNovel() {
       <ChapterTransition 
          show={showTransition} 
          chapterData={transitionData}
+         onDismiss={handleDismissTransition}
       />
 
       {/* 故事内容覆盖层 */}
@@ -755,6 +783,7 @@ export default function MythosNovel() {
         onPrev={handlePrev}
         progress={currentIndex}
         total={STORY_DATA.length}
+        showTransition={showTransition}
       />
 
       {/* 装饰线 (Desktop) */}
