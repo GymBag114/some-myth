@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 可选：确保背景全黑，防止加载闪烁 */
+body {
+  background-color: black;
+  margin: 0;
+  overflow: hidden;
+}
