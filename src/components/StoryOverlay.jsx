@@ -44,14 +44,12 @@ export default function StoryOverlay({ currentData, onNext, onPrev, progress, to
         </div>
       </motion.div>
 
-      {/* Center Text - 3D Stagger Animation [修复后] */}
+      {/* Center Text - 3D Stagger Animation */}
       <div className="absolute inset-0 flex justify-center items-center text-center px-6 z-10 pointer-events-none -translate-y-4 md:translate-y-0">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentData.id}
-            className="max-w-3xl w-full perspective-[1000px]" 
-            // 添加 perspective 到外层容器，确保 3D 效果正确
-            style={{ perspective: '1000px' }}
+            className="max-w-3xl w-full perspective-[1000px]"
             initial="hidden"
             animate="visible"
             exit="exit"
@@ -71,39 +69,27 @@ export default function StoryOverlay({ currentData, onNext, onPrev, progress, to
               <motion.p 
                 key={i} 
                 variants={{
-                  // 修复关键点：
-                  // 1. 移除了 letterSpacing 的变化 (保持恒定 0.025em)
-                  // 2. 调整 rotateX 角度，90度有时在某些浏览器会导致渲染消失，85度更安全且效果类似
-                  // 3. 保持 blur 效果
                   hidden: { 
                     opacity: 0, 
                     y: 20, 
-                    rotateX: 80, 
-                    filter: 'blur(12px)', 
+                    rotateX: 90, 
+                    filter: 'blur(12px)' 
                   },
                   visible: { 
                     opacity: 1, 
                     y: 0, 
                     rotateX: 0, 
                     filter: 'blur(0px)', 
-                    transition: { type: "spring", damping: 20, stiffness: 90 }
+                    transition: { type: "spring", damping: 18, stiffness: 80 }
                   },
-                  exit: { 
-                    opacity: 0, 
-                    y: -10, 
-                    filter: 'blur(8px)', 
-                    transition: { duration: 0.3 } 
-                  }
+                  exit: { opacity: 0, y: -10, filter: 'blur(8px)', transition: { duration: 0.3 } }
                 }}
-                // 确保 letter-spacing 在 className 中固定
-                className={`mb-4 md:mb-4 text-2xl md:text-3xl lg:text-4xl font-light leading-normal md:leading-relaxed font-serif tracking-[0.025em] ${textColorClass}`}
+                className={`mb-4 md:mb-4 text-2xl md:text-3xl lg:text-4xl font-light leading-normal md:leading-relaxed font-serif tracking-wide ${textColorClass}`}
                 style={{ 
                     textShadow: currentData.visualMode === 'void' 
                         ? '0 0 10px rgba(255,255,255,0.8), 0 0 2px rgba(255,255,255,1)' 
                         : '0 2px 4px rgba(0,0,0,0.8), 0 0 20px rgba(0,0,0,0.5)',
-                    transformStyle: 'preserve-3d',
-                    backfaceVisibility: 'hidden', // 优化 3D 渲染，防止闪烁
-                    willChange: 'transform, opacity, filter' // 提示浏览器优化
+                    transformStyle: 'preserve-3d'
                 }}
               >
                 {line}
